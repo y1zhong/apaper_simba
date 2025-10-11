@@ -1,0 +1,22 @@
+name: apaper_simba           # TO MAKE:  conda env create -f env*_simba.yml
+channels:
+  - conda-forge
+dependencies:
+  - python                   # get most recent python
+  - jupyter                  # run notebooks
+  - pillow                   # for jupyter
+  - "ipython>=8.0"           # minimal ver for tab-autocomplete to work
+  - prompt_toolkit=3.0.*     # >=2 for jupyter to autocomplete; >=3 for ipython
+  - nibabel                  # minimal ver for 'pythonic' APQC HTML
+  - numpy
+  - scikit-learn             # for sklearn module
+  - pytorch
+  - matplotlib
+  - nilearn                  # for some plotting within notebook
+  - pandas                   # used in ABCD 
+  - tqdm                     # used in the repo's "model" library
+  - cloudpickle              # "pickle" is used in the repo's "model" library
+  - pip 
+  - pip:
+    - fastkde                # for making PPC curves
+    - hcp_utils              # for ABCD data
