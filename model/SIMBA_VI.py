@@ -346,7 +346,7 @@ class SIMBA_VI():
             "ll": self.loglik_y,
         }
     
-    def get_stat_evidence(self, n_mcmc=500):
+    def get_eff_mcmc(self, n_mcmc=1000):
         E_alpha = self.paras['E_alpha']
         E_theta_beta = self.paras['E_theta_beta']
 
@@ -356,9 +356,7 @@ class SIMBA_VI():
         mcmc_alpha = torch.randn(n_mcmc, self.J) * Var_alpha[None,:].sqrt() + E_alpha[None,:]
         mcmc_theta_beta = torch.randn(n_mcmc,self.J, self.L) * Var_theta_beta.sqrt()[None,:,None] + E_theta_beta[None,:,:]
         voxel_mcmc = mcmc_alpha[:,None] + mcmc_theta_beta @ self.basis.t()
-        mean = voxel_mcmc[:,0,:].mean(dim=(0))
-        std = voxel_mcmc[:,0,:].std(dim=(0))
-        return mean, std
+        return voxel_mcmc
 
     def post_samples(self, n_mcmc=500):
         E_alpha = self.paras['E_alpha']
