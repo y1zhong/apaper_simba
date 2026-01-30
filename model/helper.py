@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from model.utils import save_pickle 
+from .utils import save_pickle 
 
 def scale(vec, tmin=-1, tmax=1):
     ''' scale function tp [-1, 1]'''
