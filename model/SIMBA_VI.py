@@ -3,7 +3,7 @@ from tqdm import tqdm
 import time
 import numpy as np
 import multiprocessing as mp
-from model.helper import ker_approx, get_basis
+from .helper import ker_approx, get_basis
 
 
 class SIMBA_VI():

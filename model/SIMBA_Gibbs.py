@@ -3,8 +3,8 @@ from tqdm import tqdm
 import time
 import numpy as np
 import multiprocessing as mp
-from model.helper import ker_approx, get_basis
-from model.helper import get_basis
+from .helper import ker_approx, get_basis
+from .helper import get_basis
 
 class SIMBA_Gibbs():
     def __init__(self, Y, grids, kernel, L, L_eta, 
