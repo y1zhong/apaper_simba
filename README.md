@@ -69,3 +69,7 @@ such as by running:
 
 Finally, select the appropriate notebook file, and execute the cells
 within it.
+
+------------------------------------------------------------------------
+
+Notes on running the code from the command line
