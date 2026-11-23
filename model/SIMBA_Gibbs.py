@@ -35,10 +35,10 @@ class SIMBA_Gibbs():
 
         # include intercept
         if X is None:
-            X = torch.ones(self.N,1)
+            X = torch.ones(self.N,1, dtype=self.dtype)
         else:
             if include_intercept:
-                X = torch.column_stack((torch.ones(self.N, 1), X))
+                X = torch.column_stack((torch.ones(self.N, 1, dtype=self.dtype), X))
         self.X = X.to(dtype)
         self.J = X.shape[1]
 
@@ -52,24 +52,27 @@ class SIMBA_Gibbs():
         self.mcmc_sample = mcmc_sample 
         self.total_iter = self.mcmc_burnin + self.mcmc_sample * self.mcmc_thinning
 
-        assert L_eta < L
+        # sanity check
+        assert 1 <= L_eta < L <= self.V, (
+            f"Require 1 <= L_eta < L <= V; got L_eta={L_eta}, L={L}, V={self.V}."
+        )
         
         # get basis functions for GP kernels
         self.L = L
         self.L_eta = L_eta
         self.B, self.eig_val_sqrt = get_basis(grids, L,  kernel, err = 1e-4, dtype=dtype)
-        self.B_eta, self.eig_val_sqrt_eta = get_basis(grids, L_eta,  kernel_eta, err = 1e-4, dtype=dtype)
-        self.basis =  self.B * (self.eig_val_sqrt.unsqueeze(0) )
-        self.basis_eta =  self.B_eta * (self.eig_val_sqrt_eta.unsqueeze(0) )
-        
+        self.B_eta, self.eig_val_sqrt_eta = get_basis(grids, L_eta,  kernel_eta, err = 1e-4, dtype=dtype)   
 
         # pre-computing
         self.B_lamb = self.B * (self.eig_val_sqrt.unsqueeze(0) )
         self.B_lamb_inv = self.B * ( (1.0 / self.eig_val_sqrt).unsqueeze(0))  # V by L
-
         self.B_lamb_eta_t = (self.B_eta * (self.eig_val_sqrt_eta.unsqueeze(0) )).t()
  
         self.y_tilde = self.y @ self.B_lamb_inv
+
+        self.B_lamb_sumv = self.B_lamb.sum(dim=0)
+        self.B_lamb_sumv_sq = self.B_lamb_sumv @ self.B_lamb_sumv
+
         self.B_lamb_inv_sumv = self.B_lamb_inv.sum(0)
         self.B_lamb_inv_sumv_ssq = (self.B_lamb_inv_sumv ** 2).sum()
 
@@ -111,18 +114,19 @@ class SIMBA_Gibbs():
     def init_paras(self):
         self.alpha = torch.randn(self.J, dtype=self.dtype) 
       
-        self.theta_eta = torch.randn(self.N, self.L_eta, dtype=self.dtype) 
+        self.theta_eta = torch.randn(self.N, self.L_eta, dtype=self.dtype)
+        self.theta_eta -= self.theta_eta.mean(0,keepdim=True) 
         self.eta = self.theta_eta @ self.B_lamb_eta_t
-        self.eta -= self.eta.mean(1, keepdim=True)
         
         self.theta_beta = torch.randn(self.J, self.L, dtype=self.dtype) 
+        self.theta_beta -= ((self.theta_beta @ self.B_lamb_sumv) / self.B_lamb_sumv_sq)[:, None] * self.B_lamb_sumv
 
         self.sig2_eta = torch.rand(1, dtype=self.dtype) 
         self.sig2_alpha = torch.rand(1, dtype=self.dtype) 
         self.sig2_eps = torch.rand(1, dtype=self.dtype)
         self.sig2_beta = torch.rand(1, dtype=self.dtype) 
 
-        self.a_eta, self.a_eps, self.a_beta, self.a_alpha = torch.ones(4)
+        self.a_eta, self.a_eps, self.a_beta, self.a_alpha = torch.ones(4, dtype=self.dtype)
         self.update_res()
 
     def fit(self, chain_id=0, verbose=False, mute=False):
@@ -157,24 +161,23 @@ class SIMBA_Gibbs():
             self.res +=  (self.X[:,j] * self.alpha[j])[:,None] * self.B_lamb_inv_sumv
             sig2 = 1 / ( (self.X[:,j] ** 2 ).sum() * self.B_lamb_inv_sumv_ssq / self.sig2_eps + 1 / self.sig2_alpha)
             mu = sig2 * (self.X[:,j:j+1] * self.B_lamb_inv_sumv / self.sig2_eps  * self.res).sum() 
-            self.alpha[j] = torch.randn(1) * sig2.sqrt() + mu
+            self.alpha[j] = torch.randn(1, dtype=self.dtype) * sig2.sqrt() + mu
             self.res -= (self.X[:,j] * self.alpha[j])[:,None] * self.B_lamb_inv_sumv
 
     def update_theta_eta(self):
         self.res += self.theta_eta @ self.B_prime
-        precision = self.B_prime_sq / self.sig2_eps + torch.eye(self.L_eta) / self.sig2_eta
+        precision = self.B_prime_sq / self.sig2_eps + torch.eye(self.L_eta, dtype=self.dtype) / self.sig2_eta
        
-        R = torch.linalg.cholesky(precision, upper=True)  + torch.eye(precision.shape[0]) * 1e-4
+        R = torch.linalg.cholesky(precision + torch.eye(precision.shape[0]) * 1e-4, upper=True)  
         temp = (self.res @ self.B_prime.t()) / self.sig2_eps
-        Z = torch.randn(self.N, self.L_eta)
+        Z = torch.randn(self.N, self.L_eta, dtype=self.dtype)
 
         for i in range(self.N):
             b = torch.linalg.solve(R.t(), temp[i])
             self.theta_eta[i] = torch.linalg.solve(R, Z[i]+b)
 
-        self.theta_eta -= self.theta_eta.mean(1,keepdim=True) # center for identifiability
+        self.theta_eta -= self.theta_eta.mean(0, keepdim=True) # center for identifiability
         self.eta = self.theta_eta @ self.B_lamb_eta_t
-        self.eta -= self.eta.mean(1, keepdim=True)
         self.res -= self.theta_eta @ self.B_prime
     
     def update_theta_beta(self):
@@ -183,8 +186,8 @@ class SIMBA_Gibbs():
             self.res += self.X[:,j:j+1] @ self.theta_beta[j:j+1,:]
             sig2 = 1 / ( (self.X[:,j] ** 2 ).sum()  / self.sig2_eps + 1 / self.sig2_beta )
             mu = sig2 * ( self.res * self.X[:,j:j+1] / self.sig2_eps ).sum(0) 
-            self.theta_beta[j,:] = torch.randn(self.L) * sig2.sqrt() + mu
-            self.theta_beta[j,:] -= self.theta_beta[j,:].mean()
+            self.theta_beta[j,:] = torch.randn(self.L, dtype=self.dtype) * sig2.sqrt() + mu
+            self.theta_beta[j,:] -= self.B_lamb_sumv * ((self.theta_beta[j,:] @ self.B_lamb_sumv) / self.B_lamb_sumv_sq)
             self.res -= self.X[:,j:j+1] @ self.theta_beta[j:j+1,:]
 
     def update_sig2_eps(self):
@@ -197,7 +200,7 @@ class SIMBA_Gibbs():
         self.a_eps = 1 / m.sample()
 
     def update_sig2_eta(self):
-        a_new = (1 + self.L_eta * self.N )/ 2 
+        a_new = (1 + self.L_eta * (self.N - 1) )/ 2 
         b_new = ( self.theta_eta ** 2).sum() / 2 + 1 / self.a_eta
         m = torch.distributions.Gamma(a_new, b_new)
         self.sig2_eta = 1 / m.sample()
@@ -206,7 +209,7 @@ class SIMBA_Gibbs():
         self.a_eta = 1 / m.sample()
 
     def update_sig2_beta(self):
-        a_new = (1 + self.J * self.L )/ 2 
+        a_new = (1 + self.J * (self.L - 1) )/ 2 
         b_new = ( self.theta_beta ** 2).sum() / 2 + 1 / self.a_beta
         m = torch.distributions.Gamma(a_new, b_new)
         self.sig2_beta = 1 / m.sample()
@@ -224,11 +227,11 @@ class SIMBA_Gibbs():
         self.a_alpha = 1 / m.sample()
 
     def update_loglik_y(self):
-        logll = (- self.N / 2 * torch.log(2. * torch.pi * self.sig2_eps)).sum() - 0.5 * (self.res ** 2 / self.sig2_eps ).sum() 
+        logll = (- self.N * self.L / 2 * torch.log(2. * torch.pi * self.sig2_eps)).sum() - 0.5 * (self.res ** 2 / self.sig2_eps ).sum() 
         return logll
 
     def make_mcmc_samples(self):
-        self.loglik_y = torch.zeros(self.total_iter)
+        self.loglik_y = torch.zeros(self.total_iter, dtype=self.dtype)
         self.mcmc_alpha = torch.zeros(self.mcmc_sample, self.J, dtype=self.dtype)
         self.mcmc_theta_beta = torch.zeros(self.mcmc_sample, self.J, self.L, dtype=self.dtype)
         self.mcmc_theta_eta = torch.zeros(self.mcmc_sample,  self.N, self.L_eta, dtype=self.dtype)
@@ -254,14 +257,15 @@ class SIMBA_Gibbs():
             "alpha": self.mcmc_alpha,
             "theta_eta": self.mcmc_theta_eta,
             "theta_beta": self.mcmc_theta_beta,
+            "sig2_alpha": self.mcmc_sig2_alpha,
             "sig2_beta": self.mcmc_sig2_beta,
             "sig2_eta": self.mcmc_sig2_eta,
             "sig2_eps": self.mcmc_sig2_eps,
             "loglik": self.loglik_y,
-            'runtime':torch.tensor(self.runtime),
+            'runtime':torch.tensor(self.runtime, dtype=self.dtype),
         }
     
-    def PPC(self, n_samples=100, dtype=torch.float32):
+    def PPC(self, n_samples=100):
         """
         Posterior Predictive Check (PPC)
 
@@ -276,10 +280,10 @@ class SIMBA_Gibbs():
         if n_samples > self.mcmc_sample:
             print("number of draws needs to be smaller than available mcmc samples")
         idx = torch.linspace(0, self.mcmc_sample - 1, n_samples, dtype=torch.int32)
-        pred_y = torch.zeros(self.n_chains, n_samples, self.N, self.V, dtype=dtype)
+        pred_y = torch.zeros(self.n_chains, n_samples, self.N, self.V, dtype=self.dtype)
         
 
-        basis_eta_t = self.basis_eta.t()
+        basis_eta_t = self.B_lamb_eta_t
 
         for s in range(self.n_chains):
             for i, ind in enumerate(idx):
@@ -289,8 +293,8 @@ class SIMBA_Gibbs():
                 sig2_eps = self.samples['sig2_eps'][s, ind]
                 #sig2_eps = samples['sig2_eps'][s, ind]
 
-                mean = (self.X @ alpha)[:,None] + theta_eta @ basis_eta_t + self.X @ (theta_beta @ self.basis.t())
-                noise = self.basis @ (torch.randn(self.L, self.N) * sig2_eps.sqrt())
+                mean = (self.X @ alpha)[:,None] + theta_eta @ basis_eta_t + self.X @ (theta_beta @ self.B_lamb.t())
+                noise = self.B_lamb @ (torch.randn(self.L, self.N, dtype=self.dtype) * sig2_eps.sqrt())
                 pred_y[s, i] = mean + noise.t()
         return pred_y
 
